@@ -1,0 +1,1085 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Space Shooter</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background-color: #ff80b0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: Arial, sans-serif;
+      touch-action: none; /* prevent scroll/zoom while playing */
+      overflow: hidden;
+    }
+
+    h1 {
+      color: #fff;
+      font-size: 2.5rem;
+      letter-spacing: 4px;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      text-shadow: 0 0 10px #ff1493, 0 0 20px #ff69b4;
+    }
+
+    canvas {
+      background-color: #ffb6c1;
+      display: block;
+      /* Scale canvas to fit any screen while keeping aspect ratio */
+      max-width: 100vw;
+      max-height: 85vh;
+      width: auto;
+      height: auto;
+      touch-action: none;
+    }
+
+    /* Mobile hint — hidden on desktop */
+    #mobileHint {
+      display: none;
+      color: #7a0033;
+      font-size: 0.75rem;
+      margin-top: 6px;
+      text-align: center;
+      opacity: 0.8;
+    }
+    @media (pointer: coarse) {
+      h1 { font-size: 1.5rem; margin-bottom: 6px; }
+      #mobileHint { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Space Shooter</h1>
+  <canvas id="gameCanvas" width="800" height="600"></canvas>
+  <p id="mobileHint">👆 Tap to shoot &nbsp;|&nbsp; Slide finger to move</p>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // ── Glittery pink background ──────────────────────────────────────────────
+    // Pre-generate glitter dots; they twinkle every frame
+    const GLITTER_COUNT = 120;
+    const glitter = [];
+    for (let i = 0; i < GLITTER_COUNT; i++) {
+      glitter.push({
+        x: Math.random() * 800,
+        y: Math.random() * 600,
+        r: 1 + Math.random() * 2.5,
+        speed: 0.2 + Math.random() * 0.5,
+        phase: Math.random() * Math.PI * 2,   // twinkle offset
+        color: ['#ffffff', '#ffe4f0', '#ff69b4', '#ffccdd', '#ff1493'][Math.floor(Math.random() * 5)]
+      });
+    }
+
+    function drawBackground() {
+      // Pink gradient base
+      const bg = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      bg.addColorStop(0, '#ff80b0');
+      bg.addColorStop(0.5, '#ffb6c1');
+      bg.addColorStop(1, '#ff69b4');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Twinkling glitter dots
+      const now = Date.now() / 600;
+      glitter.forEach(g => {
+        g.y += g.speed;
+        if (g.y > canvas.height) { g.y = -g.r; g.x = Math.random() * canvas.width; }
+
+        const alpha = 0.4 + 0.6 * Math.abs(Math.sin(now + g.phase));
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.shadowColor = g.color;
+        ctx.shadowBlur = 6;
+        ctx.fillStyle = g.color;
+        ctx.beginPath();
+        ctx.arc(g.x, g.y, g.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Player ship
+    const ship = {
+      x: canvas.width / 2,
+      y: canvas.height - 70,
+      width: 70,
+      height: 90,
+      speed: 5
+    };
+
+    // Simple image loader — just loads the image, no pixel manipulation
+    // (getImageData fails on file:// due to browser security; we clip to shape instead)
+    function loadImg(src, callback) {
+      const img = new Image();
+      img.onload = function () { callback(img); };
+      img.onerror = function () { console.warn('Could not load:', src); };
+      img.src = src;
+    }
+
+    // Raw image references (null until loaded)
+    let barbieImg      = null; // shooter  — barbie face.jpeg
+    let weirdBarbieImg = null; // enemy    — weird barbie.jpeg
+    let kenImg         = null; // boss     — ken.jpeg
+
+    loadImg('barbie face.jpeg',  function(img) { barbieImg      = img; });
+    loadImg('weird barbie.jpeg', function(img) { weirdBarbieImg = img; });
+    loadImg('ken.jpeg',          function(img) { kenImg         = img; });
+
+    // Bullets
+    const bullets = [];
+    const BULLET_SPEED = 8;
+    const SHOOT_COOLDOWN = 250; // ms
+    let lastShotTime = 0;
+
+    // Enemies
+    const enemies = [];
+    const ENEMY_SIZE = 50;
+    const BASE_ENEMY_SPEED    = 2;
+    const BASE_SPAWN_INTERVAL = 1000; // ms
+    let lastSpawnTime = 0;
+
+    // Boss
+    const BOSS_SIZE = 100;
+    const BOSS_SPEED = 1.2;
+    const BOSS_HP = 5;
+    const BOSS_INTERVAL = 30000; // 30 seconds
+    const BOSS_POINTS = 50;
+    const BOSS_PARTICLE_COLORS = ['#cc00ff', '#aa00dd', '#ff44ff', '#ff99ff', '#7700cc'];
+    let boss = null;
+    // Set lastBossTime so the first boss arrives ~10s after game start
+    let lastBossTime = Date.now() - 20000;
+
+    // Power-ups
+    const POWERUP_RADIUS   = 22;
+    const POWERUP_SPEED    = 1.8;
+    const POWERUP_INTERVAL = 20000; // 20 seconds
+    const RAPIDFIRE_DURATION = 5000; // 5 seconds
+    let powerup = null;
+    // Offset so first power-up appears ~5s after game start
+    let lastPowerupTime = Date.now() - 15000;
+    let rapidFireUntil = 0;
+
+    // Particles
+    const particles = [];
+    const PARTICLE_COLORS = ['#ff6600', '#ff4400', '#ff9900', '#ffcc00', '#ff2200'];
+
+    function spawnParticles(x, y) {
+      const count = 18;
+      for (let i = 0; i < count; i++) {
+        const angle = (Math.PI * 2 / count) * i + (Math.random() - 0.5) * 0.4;
+        const speed = 1.5 + Math.random() * 3.5;
+        particles.push({
+          x,
+          y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          radius: 2 + Math.random() * 3,
+          alpha: 1,
+          color: PARTICLE_COLORS[Math.floor(Math.random() * PARTICLE_COLORS.length)]
+        });
+      }
+    }
+
+    // Score & level
+    let score = 0;
+    let level = 1;
+
+    // Computed difficulty — recalculated whenever score changes
+    function getEnemySpeed()    { return BASE_ENEMY_SPEED    + (level - 1) * 0.5; }
+    function getSpawnInterval() { return Math.max(300, BASE_SPAWN_INTERVAL - (level - 1) * 100); }
+
+    function updateLevel() {
+      const newLevel = Math.floor(score / 100) + 1;
+      if (newLevel > level) {
+        level = newLevel;
+        showLevelUp();
+      }
+    }
+
+    // Brief "LEVEL UP!" flash
+    let levelUpTimer = 0;
+    function showLevelUp() { levelUpTimer = 120; } // frames
+
+    // Lives & game state
+    let lives = 3;
+    let gameOver = false;
+
+    // ── Audio (Web Audio API, no external files needed) ──────────────────────
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    // Lazily resume AudioContext on first user interaction (browser autoplay policy)
+    function resumeAudio() {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    }
+    document.addEventListener('keydown', resumeAudio, { once: true });
+
+    function playShootSound() {
+      // "Heart burst" — a warm, rising two-note chime (like a kiss/pop)
+      // First note: soft low thump (the "heartbeat" thud)
+      const t = audioCtx.currentTime;
+
+      // Thud: low sine that drops quickly — felt more than heard
+      const thud = audioCtx.createOscillator();
+      const thudGain = audioCtx.createGain();
+      thud.type = 'sine';
+      thud.frequency.setValueAtTime(180, t);
+      thud.frequency.exponentialRampToValueAtTime(60, t + 0.07);
+      thudGain.gain.setValueAtTime(0.28, t);
+      thudGain.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+      thud.connect(thudGain);
+      thudGain.connect(audioCtx.destination);
+      thud.start(t); thud.stop(t + 0.07);
+
+      // Sparkle: bright sine sweep upward — the "burst" leaving the heart
+      const sparkle = audioCtx.createOscillator();
+      const sparkleGain = audioCtx.createGain();
+      sparkle.type = 'sine';
+      sparkle.frequency.setValueAtTime(520, t + 0.03);
+      sparkle.frequency.exponentialRampToValueAtTime(900, t + 0.18);
+      sparkleGain.gain.setValueAtTime(0.0001, t + 0.03);
+      sparkleGain.gain.linearRampToValueAtTime(0.18, t + 0.06);
+      sparkleGain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+      sparkle.connect(sparkleGain);
+      sparkleGain.connect(audioCtx.destination);
+      sparkle.start(t + 0.03); sparkle.stop(t + 0.22);
+
+      // Tiny triangle shimmer on top for sweetness
+      const shimmer = audioCtx.createOscillator();
+      const shimmerGain = audioCtx.createGain();
+      shimmer.type = 'triangle';
+      shimmer.frequency.setValueAtTime(1040, t + 0.05);
+      shimmer.frequency.exponentialRampToValueAtTime(1400, t + 0.15);
+      shimmerGain.gain.setValueAtTime(0.0001, t + 0.05);
+      shimmerGain.gain.linearRampToValueAtTime(0.09, t + 0.07);
+      shimmerGain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+      shimmer.connect(shimmerGain);
+      shimmerGain.connect(audioCtx.destination);
+      shimmer.start(t + 0.05); shimmer.stop(t + 0.18);
+    }
+
+    function playExplosionSound() {
+      // White-noise burst for the explosion feel
+      const bufferSize = audioCtx.sampleRate * 0.25; // 0.25s of noise
+      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
+      const source = audioCtx.createBufferSource();
+      source.buffer = buffer;
+
+      const gain = audioCtx.createGain();
+      gain.gain.setValueAtTime(0.35, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.25);
+
+      // Band-pass filter to make it punchy rather than hissy
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 400;
+      filter.Q.value = 0.8;
+
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(audioCtx.destination);
+      source.start(audioCtx.currentTime);
+    }
+
+    function playPowerupSound() {
+      // Rising two-tone chime
+      [523.25, 783.99].forEach((freq, i) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.type = 'sine';
+        const t = audioCtx.currentTime + i * 0.12;
+        osc.frequency.setValueAtTime(freq, t);
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.linearRampToValueAtTime(0.3, t + 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+        osc.start(t);
+        osc.stop(t + 0.25);
+      });
+    }
+
+    // ── Background Music ──────────────────────────────────────────────────────
+    // Calm, dreamy, memorable theme — music-box melody over warm pad chords.
+    // Inspired by cozy game soundtracks (Animal Crossing / Stardew style).
+    // Built entirely with Web Audio API — no external files.
+
+    let bgmStarted = false;
+
+    function startBGM() {
+      if (bgmStarted) return;
+      bgmStarted = true;
+
+      // ── Shared signal chain ──────────────────────────────────────────────
+      const master = audioCtx.createGain();
+      master.gain.value = 0.42;
+      master.connect(audioCtx.destination);
+
+      // Lush reverb (2.5s tail)
+      const revLen = audioCtx.sampleRate * 2.5;
+      const revBuf = audioCtx.createBuffer(2, revLen, audioCtx.sampleRate);
+      for (let ch = 0; ch < 2; ch++) {
+        const d = revBuf.getChannelData(ch);
+        for (let i = 0; i < revLen; i++)
+          d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / revLen, 1.8);
+      }
+      const reverb = audioCtx.createConvolver();
+      reverb.buffer = revBuf;
+
+      const revGain = audioCtx.createGain();  revGain.gain.value  = 0.45;
+      const dryGain = audioCtx.createGain();  dryGain.gain.value  = 0.55;
+      reverb.connect(revGain);
+      revGain.connect(master);
+      dryGain.connect(master);
+
+      // ── Memorable melody (C major, music-box feel) ───────────────────────
+      // Pattern: E4 G4 A4 G4 | E4 C4 D4 E4  (repeating 8-note hook)
+      const MELODY = [
+        329.63, 392.00, 440.00, 392.00,
+        329.63, 261.63, 293.66, 329.63
+      ];
+      const MEL_DUR = 0.52; // seconds per note
+      let melStep = 0;
+
+      function playMelNote() {
+        const freq = MELODY[melStep % MELODY.length];
+        const t = audioCtx.currentTime;
+
+        // Primary sine — soft and clear
+        const osc = audioCtx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+
+        // Slight triangle octave-up for music-box shimmer
+        const osc2 = audioCtx.createOscillator();
+        osc2.type = 'triangle';
+        osc2.frequency.value = freq * 2;
+
+        const env = audioCtx.createGain();
+        env.gain.setValueAtTime(0.0001, t);
+        env.gain.linearRampToValueAtTime(0.55, t + 0.015);   // fast pluck attack
+        env.gain.exponentialRampToValueAtTime(0.18, t + 0.18); // sustain drop
+        env.gain.exponentialRampToValueAtTime(0.0001, t + MEL_DUR * 0.9);
+
+        const env2 = audioCtx.createGain();
+        env2.gain.setValueAtTime(0.0001, t);
+        env2.gain.linearRampToValueAtTime(0.15, t + 0.01);
+        env2.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+
+        osc.connect(env);   env.connect(dryGain);  env.connect(reverb);
+        osc2.connect(env2); env2.connect(dryGain);
+
+        osc.start(t); osc.stop(t + MEL_DUR);
+        osc2.start(t); osc2.stop(t + 0.12);
+        melStep++;
+      }
+
+      // ── Warm pad chords (C, Am, F, G cycle — 4 notes = 2 bars) ──────────
+      // Each chord sustains for 4 melody notes
+      const CHORDS = [
+        [261.63, 329.63, 392.00],   // C major  (C4 E4 G4)
+        [220.00, 261.63, 329.63],   // A minor  (A3 C4 E4)
+        [174.61, 220.00, 261.63],   // F major  (F3 A3 C4)
+        [196.00, 246.94, 293.66],   // G major  (G3 B3 D4)
+      ];
+      const CHORD_DUR = MEL_DUR * 4; // hold each chord for 4 melody beats
+      let chordStep = 0;
+
+      function playChord() {
+        const notes = CHORDS[chordStep % CHORDS.length];
+        const t = audioCtx.currentTime;
+
+        notes.forEach((freq, i) => {
+          // Slightly detuned pair for warmth
+          [-4, 4].forEach(detune => {
+            const osc = audioCtx.createOscillator();
+            osc.type = 'triangle';
+            osc.frequency.value = freq;
+            osc.detune.value = detune;
+
+            const env = audioCtx.createGain();
+            env.gain.setValueAtTime(0.0001, t + i * 0.03);
+            env.gain.linearRampToValueAtTime(0.08, t + i * 0.03 + 0.2);
+            env.gain.setValueAtTime(0.08, t + CHORD_DUR - 0.3);
+            env.gain.linearRampToValueAtTime(0.0001, t + CHORD_DUR);
+
+            osc.connect(env); env.connect(dryGain); env.connect(reverb);
+            osc.start(t + i * 0.03); osc.stop(t + CHORD_DUR);
+          });
+        });
+        chordStep++;
+      }
+
+      // ── Soft bass (root note, gentle pluck) ──────────────────────────────
+      const BASS_ROOTS = [130.81, 110.00, 87.31, 98.00]; // C3 A2 F2 G2
+      let bassStep = 0;
+
+      function playBass() {
+        const freq = BASS_ROOTS[bassStep % BASS_ROOTS.length];
+        const t = audioCtx.currentTime;
+
+        const osc = audioCtx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+
+        const lp = audioCtx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.value = 280;
+
+        const env = audioCtx.createGain();
+        env.gain.setValueAtTime(0.0001, t);
+        env.gain.linearRampToValueAtTime(0.5, t + 0.04);
+        env.gain.exponentialRampToValueAtTime(0.0001, t + CHORD_DUR * 0.7);
+
+        osc.connect(lp); lp.connect(env); env.connect(master);
+        osc.start(t); osc.stop(t + CHORD_DUR);
+        bassStep++;
+      }
+
+      // ── Schedulers ───────────────────────────────────────────────────────
+      playMelNote(); playChord(); playBass();
+
+      const melTimer   = setInterval(playMelNote,  MEL_DUR   * 1000);
+      const chordTimer = setInterval(playChord,    CHORD_DUR * 1000);
+      const bassTimer  = setInterval(playBass,     CHORD_DUR * 1000);
+
+      window._bgmTimers      = [melTimer, chordTimer, bassTimer];
+      window._bgmMasterGain  = master;
+    }
+
+    function stopBGM() {
+      if (!bgmStarted) return;
+      bgmStarted = false;
+      if (window._bgmTimers) {
+        window._bgmTimers.forEach(clearInterval);
+        window._bgmTimers = null;
+      }
+      if (window._bgmMasterGain) {
+        window._bgmMasterGain.gain.cancelScheduledValues(audioCtx.currentTime);
+        window._bgmMasterGain.gain.setValueAtTime(window._bgmMasterGain.gain.value, audioCtx.currentTime);
+        window._bgmMasterGain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.5);
+        window._bgmMasterGain = null;
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Track pressed keys
+    const keys = {};
+    document.addEventListener('keydown', e => {
+      keys[e.key] = true;
+      resumeAudio();
+      startBGM();
+      if (e.key === 'r' || e.key === 'R') restartGame();
+    });
+    document.addEventListener('keyup', e => keys[e.key] = false);
+
+    // ── Touch / mobile controls ───────────────────────────────────────────────
+    // Convert a touch clientX position to canvas-space X (accounts for CSS scaling)
+    function touchCanvasX(touch) {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      return (touch.clientX - rect.left) * scaleX;
+    }
+
+    let activeTouchId = null;   // tracks the primary finger
+    let lastTouchX    = null;   // last known canvas-X for that finger
+
+    canvas.addEventListener('touchstart', e => {
+      e.preventDefault();
+      resumeAudio();
+      startBGM();
+
+      if (gameOver) {
+        restartGame();
+        return;
+      }
+
+      // Use the first new touch as the control finger
+      const touch = e.changedTouches[0];
+      activeTouchId = touch.identifier;
+      lastTouchX    = touchCanvasX(touch);
+
+      // Snap ship to where finger lands
+      const halfW = ship.width / 2;
+      ship.x = Math.min(Math.max(lastTouchX, halfW), canvas.width - halfW);
+
+      // Every tap fires a bullet
+      shoot();
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', e => {
+      e.preventDefault();
+      if (gameOver) return;
+
+      // Find our tracked finger
+      for (const touch of e.changedTouches) {
+        if (touch.identifier === activeTouchId) {
+          const newX   = touchCanvasX(touch);
+          const deltaX = newX - lastTouchX;
+          lastTouchX   = newX;
+
+          // Move ship by the same delta the finger moved
+          ship.x += deltaX;
+          const halfW = ship.width / 2;
+          ship.x = Math.min(Math.max(ship.x, halfW), canvas.width - halfW);
+          break;
+        }
+      }
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', e => {
+      e.preventDefault();
+      for (const touch of e.changedTouches) {
+        if (touch.identifier === activeTouchId) {
+          activeTouchId = null;
+          lastTouchX    = null;
+          break;
+        }
+      }
+    }, { passive: false });
+    // ─────────────────────────────────────────────────────────────────────────
+
+    function restartGame() {
+      if (!gameOver) return;
+      score = 0;
+      level = 1;
+      levelUpTimer = 0;
+      lives = 3;
+      gameOver = false;
+      bullets.length = 0;
+      enemies.length = 0;
+      particles.length = 0;
+      boss = null;
+      powerup = null;
+      rapidFireUntil = 0;
+      ship.x = canvas.width / 2;
+      lastShotTime = 0;
+      lastSpawnTime = 0;
+      lastBossTime = Date.now() - 20000; // first boss arrives ~10s after restart
+      lastPowerupTime = Date.now() - 15000; // first power-up arrives ~5s after restart
+      startBGM();
+      requestAnimationFrame(gameLoop);
+    }
+
+    function shoot() {
+      const now = Date.now();
+      const cooldown = now < rapidFireUntil ? SHOOT_COOLDOWN / 2 : SHOOT_COOLDOWN;
+      if (now - lastShotTime < cooldown) return;
+      lastShotTime = now;
+
+      bullets.push({
+        x: ship.x,
+        y: ship.y - ship.height / 2, // tip of the ship
+        width: 12,
+        height: 12,
+        size: 12   // hearts are roughly square
+      });
+      playShootSound();
+    }
+
+    function spawnEnemy() {
+      const now = Date.now();
+      if (now - lastSpawnTime < getSpawnInterval()) return;
+      lastSpawnTime = now;
+
+      const x = Math.random() * (canvas.width - ENEMY_SIZE);
+      enemies.push({ x, y: -ENEMY_SIZE, size: ENEMY_SIZE });
+    }
+
+    function spawnBoss() {
+      const now = Date.now();
+      if (boss || now - lastBossTime < BOSS_INTERVAL) return;
+      lastBossTime = now;
+
+      boss = {
+        x: canvas.width / 2 - BOSS_SIZE / 2,
+        y: -BOSS_SIZE,
+        size: BOSS_SIZE,
+        hp: BOSS_HP
+      };
+    }
+
+    function checkBossCollisions() {
+      if (!boss) return;
+      for (let bi = bullets.length - 1; bi >= 0; bi--) {
+        const b = bullets[bi];
+        if (
+          b.x + b.width / 2 > boss.x &&
+          b.x - b.width / 2 < boss.x + boss.size &&
+          b.y < boss.y + boss.size &&
+          b.y + b.height > boss.y
+        ) {
+          bullets.splice(bi, 1);
+          boss.hp--;
+          // Small hit flash — spawn a few particles at impact point
+          spawnBossHitParticles(b.x, Math.max(boss.y, b.y));
+          playExplosionSound();
+          if (boss.hp <= 0) {
+            score += BOSS_POINTS;
+            updateLevel();
+            spawnBossExplosion(boss.x + boss.size / 2, boss.y + boss.size / 2);
+            boss = null;
+          }
+          break;
+        }
+      }
+    }
+
+    function spawnBossHitParticles(x, y) {
+      for (let i = 0; i < 6; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 1 + Math.random() * 2;
+        particles.push({
+          x, y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          radius: 2 + Math.random() * 2,
+          alpha: 0.9,
+          color: BOSS_PARTICLE_COLORS[Math.floor(Math.random() * BOSS_PARTICLE_COLORS.length)]
+        });
+      }
+    }
+
+    function spawnBossExplosion(x, y) {
+      const count = 36;
+      for (let i = 0; i < count; i++) {
+        const angle = (Math.PI * 2 / count) * i + (Math.random() - 0.5) * 0.3;
+        const speed = 2 + Math.random() * 5;
+        particles.push({
+          x, y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          radius: 3 + Math.random() * 4,
+          alpha: 1,
+          color: BOSS_PARTICLE_COLORS[Math.floor(Math.random() * BOSS_PARTICLE_COLORS.length)]
+        });
+      }
+    }
+
+    function spawnPowerup() {
+      const now = Date.now();
+      if (powerup || now - lastPowerupTime < POWERUP_INTERVAL) return;
+      lastPowerupTime = now;
+      powerup = {
+        x: POWERUP_RADIUS + Math.random() * (canvas.width - POWERUP_RADIUS * 2),
+        y: -POWERUP_RADIUS,
+        radius: POWERUP_RADIUS,
+        pulse: 0 // for visual pulsing animation
+      };
+    }
+
+    function checkPowerupCollection() {
+      if (!powerup) return;
+      const dx = ship.x - powerup.x;
+      const dy = ship.y - powerup.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < powerup.radius + ship.width / 2) {
+        rapidFireUntil = Date.now() + RAPIDFIRE_DURATION;
+        powerup = null;
+        playPowerupSound();
+      }
+    }
+
+    function checkCollisions() {
+      for (let ei = enemies.length - 1; ei >= 0; ei--) {
+        const e = enemies[ei];
+        for (let bi = bullets.length - 1; bi >= 0; bi--) {
+          const b = bullets[bi];
+          // AABB collision
+          if (
+            b.x + b.width / 2 > e.x &&
+            b.x - b.width / 2 < e.x + e.size &&
+            b.y < e.y + e.size &&
+            b.y + b.height > e.y
+          ) {
+            enemies.splice(ei, 1);
+            bullets.splice(bi, 1);
+            score += 10;
+            updateLevel();
+            spawnParticles(e.x + e.size / 2, e.y + e.size / 2);
+            playExplosionSound();
+            break; // enemy is gone, move to next enemy
+          }
+        }
+      }
+    }
+
+    function update() {
+      if (keys['ArrowLeft'])  ship.x -= ship.speed;
+      if (keys['ArrowRight']) ship.x += ship.speed;
+
+      // Keep ship within canvas bounds
+      const halfW = ship.width / 2;
+      if (ship.x - halfW < 0)             ship.x = halfW;
+      if (ship.x + halfW > canvas.width)  ship.x = canvas.width - halfW;
+
+      // Shoot on spacebar
+      if (keys[' ']) shoot();
+
+      // Move bullets upward and remove off-screen ones
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        bullets[i].y -= BULLET_SPEED;
+        if (bullets[i].y + bullets[i].height < 0) {
+          bullets.splice(i, 1);
+        }
+      }
+
+      // Spawn and move enemies
+      spawnEnemy();
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        enemies[i].y += getEnemySpeed();
+        if (enemies[i].y > canvas.height) {
+          enemies.splice(i, 1);
+          lives--;
+          if (lives <= 0) {
+            lives = 0;
+            gameOver = true;
+            stopBGM();
+          }
+        }
+      }
+
+      // Spawn and move boss
+      spawnBoss();
+      if (boss) {
+        boss.y += BOSS_SPEED;
+        if (boss.y > canvas.height) {
+          boss = null;
+          lives--;
+          if (lives <= 0) {
+            lives = 0;
+            gameOver = true;
+            stopBGM();
+          }
+        }
+      }
+
+      // Check bullet-enemy collisions
+      checkCollisions();
+      checkBossCollisions();
+
+      // Spawn, move, and collect power-ups
+      spawnPowerup();
+      if (powerup) {
+        powerup.y += POWERUP_SPEED;
+        powerup.pulse += 0.1;
+        if (powerup.y - powerup.radius > canvas.height) powerup = null;
+        else checkPowerupCollection();
+      }
+
+      // Update particles
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.alpha -= 0.025;
+        if (p.alpha <= 0) particles.splice(i, 1);
+      }
+
+      // Tick level-up flash
+      if (levelUpTimer > 0) levelUpTimer--;
+    }
+
+    function drawHUD() {
+      ctx.font = 'bold 18px Arial';
+      ctx.textBaseline = 'top';
+
+      // Score — top left
+      ctx.fillStyle = '#7a0033';
+      ctx.shadowColor = '#ffffff';
+      ctx.shadowBlur = 4;
+      ctx.fillText(`Score: ${score}`, 16, 16);
+
+      // Level — top center
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#5a0020';
+      ctx.fillText(`Level ${level}`, canvas.width / 2, 16);
+      ctx.textAlign = 'left';
+
+      // Lives — top right
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#7a0033';
+      ctx.fillText(`Lives: ${lives}`, canvas.width - 16, 16);
+      ctx.textAlign = 'left';
+      ctx.shadowBlur = 0;
+
+      // Level-up flash
+      if (levelUpTimer > 0) {
+        const alpha = levelUpTimer / 120;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold 48px Arial';
+        ctx.fillStyle = '#cc0033';
+        ctx.shadowColor = '#ff69b4';
+        ctx.shadowBlur = 20;
+        ctx.fillText(`LEVEL ${level}!`, canvas.width / 2, canvas.height / 2);
+        ctx.restore();
+      }
+    }
+
+    function drawGameOver() {
+      // Semi-transparent overlay
+      ctx.fillStyle = 'rgba(180, 0, 60, 0.75)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+
+      // "GAME OVER" — black stroke border then red fill
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 72px Arial';
+      ctx.shadowBlur = 0;
+
+      // Black outline
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 8;
+      ctx.lineJoin = 'round';
+      ctx.strokeText('GAME OVER', cx, cy - 50);
+
+      // Red fill
+      ctx.fillStyle = '#ff1111';
+      ctx.fillText('GAME OVER', cx, cy - 50);
+
+      // Final score
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 28px Arial';
+      ctx.fillText(`Final Score: ${score}`, cx, cy + 20);
+
+      // Restart prompt
+      ctx.fillStyle = '#aaaaaa';
+      ctx.font = '20px Arial';
+      ctx.fillText('Press R to Restart', cx, cy + 70);
+
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+    }
+
+    function drawParticles() {
+      particles.forEach(p => {
+        ctx.save();
+        ctx.globalAlpha = p.alpha;
+        ctx.shadowColor = p.color;
+        ctx.shadowBlur = 6;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      });
+    }
+
+    function drawBoss() {
+      if (!boss) return;
+
+      ctx.save();
+      ctx.shadowColor = '#cc00ff';
+      ctx.shadowBlur = 24;
+      if (kenImg) {
+        drawImgRounded(kenImg, boss.x, boss.y, boss.size, boss.size, 12);
+      } else {
+        ctx.fillStyle = '#7700aa';
+        ctx.fillRect(boss.x, boss.y, boss.size, boss.size);
+      }
+      ctx.shadowBlur = 0;
+      ctx.restore();
+
+      // HP bar above boss
+      const barW = boss.size;
+      const barH = 8;
+      const barX = boss.x;
+      const barY = boss.y - 16;
+      const hpFrac = boss.hp / BOSS_HP;
+
+      ctx.fillStyle = '#440044';
+      ctx.fillRect(barX, barY, barW, barH);
+      ctx.fillStyle = hpFrac > 0.5 ? '#cc44ff' : '#ff44cc';
+      ctx.fillRect(barX, barY, barW * hpFrac, barH);
+      ctx.strokeStyle = '#ff88ff';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(barX, barY, barW, barH);
+    }
+
+    function drawPowerup() {
+      if (!powerup) return;
+      const { x, y, pulse } = powerup;
+      const s = 24 + Math.sin(pulse) * 3; // pulsing size
+      // Vertical offset so the heart is visually centred on (x, y)
+      const oy = y - s * 0.35;
+
+      ctx.save();
+
+      // Helper: draw the heart outline at a given scale around (x, oy)
+      function pu_heart(scale) {
+        const sc = s * scale;
+        const oyo = y - sc * 0.35;
+        ctx.beginPath();
+        ctx.moveTo(x, oyo + sc * 0.35);
+        ctx.bezierCurveTo(x + sc * 1.0, oyo - sc * 0.6,  x + sc * 1.4, oyo + sc * 0.4, x, oyo + sc * 1.2);
+        ctx.bezierCurveTo(x - sc * 1.4, oyo + sc * 0.4,  x - sc * 1.0, oyo - sc * 0.6, x, oyo + sc * 0.35);
+        ctx.closePath();
+      }
+
+      // Black border
+      pu_heart(1.25);
+      ctx.fillStyle = '#000000';
+      ctx.fill();
+
+      // Red fill
+      pu_heart(1.0);
+      ctx.fillStyle = '#dd0000';
+      ctx.fill();
+
+      // Brighter red inner highlight
+      pu_heart(0.6);
+      ctx.fillStyle = '#ff4444';
+      ctx.fill();
+
+      // White shine spot
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.beginPath();
+      ctx.ellipse(x - s * 0.35, oy + s * 0.25, s * 0.28, s * 0.17, -0.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    // ── Drawing helpers ───────────────────────────────────────────────────────
+
+    // Clip image to a circle
+    function drawImgCircle(img, cx, cy, radius) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(img, cx - radius, cy - radius, radius * 2, radius * 2);
+      ctx.restore();
+    }
+
+    // Clip image to a rounded rectangle
+    function drawImgRounded(img, x, y, w, h, r) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+      ctx.clip();
+      ctx.drawImage(img, x, y, w, h);
+      ctx.restore();
+    }
+
+    // Build a heart path truly centered at (cx, cy).
+    // The heart spans ~1.95s vertically (from top of humps to bottom tip).
+    // We shift y by -s*0.35 so the visual centroid lands on (cx, cy).
+    function heartPath(cx, cy, size) {
+      const s = size / 2;
+      const oy = cy - s * 0.35; // vertical offset to centre the shape
+      ctx.beginPath();
+      ctx.moveTo(cx, oy + s * 0.35);
+      ctx.bezierCurveTo(cx + s * 1.0, oy - s * 0.6,  cx + s * 1.5, oy + s * 0.5, cx, oy + s * 1.3);
+      ctx.bezierCurveTo(cx - s * 1.5, oy + s * 0.5,  cx - s * 1.0, oy - s * 0.6, cx, oy + s * 0.35);
+      ctx.closePath();
+    }
+
+    function drawBullets() {
+      bullets.forEach(b => {
+        ctx.save();
+
+        // Draw black border first (slightly larger heart)
+        heartPath(b.x, b.y, b.size * 1.35);
+        ctx.fillStyle = '#000000';
+        ctx.fill();
+
+        // Draw pink filled heart on top
+        heartPath(b.x, b.y, b.size);
+        ctx.fillStyle = '#ff69b4';
+        ctx.fill();
+
+        // Bright pink highlight
+        heartPath(b.x, b.y, b.size * 0.55);
+        ctx.fillStyle = 'rgba(255,200,230,0.55)';
+        ctx.fill();
+
+        ctx.restore();
+      });
+    }
+
+    function drawShip() {
+      const { x, y, width, height } = ship;
+      if (barbieImg) {
+        drawImgCircle(barbieImg, x, y, Math.min(width, height) / 2);
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(x, y - height / 2);
+        ctx.lineTo(x - width / 2, y + height / 2);
+        ctx.lineTo(x + width / 2, y + height / 2);
+        ctx.closePath();
+        ctx.fillStyle = '#e91e8c';
+        ctx.fill();
+      }
+    }
+
+    function drawEnemies() {
+      enemies.forEach(e => {
+        if (weirdBarbieImg) {
+          drawImgRounded(weirdBarbieImg, e.x, e.y, e.size, e.size, 8);
+        } else {
+          ctx.shadowColor = '#ff2222';
+          ctx.shadowBlur = 10;
+          ctx.fillStyle = '#cc0000';
+          ctx.fillRect(e.x, e.y, e.size, e.size);
+          ctx.shadowBlur = 0;
+        }
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    function gameLoop() {
+      // Draw pink glittery background
+      drawBackground();
+
+      if (gameOver) {
+        drawEnemies();
+        drawBullets();
+        drawShip();
+        drawHUD();
+        drawGameOver();
+        return; // stop the loop
+      }
+
+      update();
+      drawParticles();
+      drawPowerup();
+      drawBoss();
+      drawEnemies();
+      drawBullets();
+      drawShip();
+      drawHUD();
+
+      requestAnimationFrame(gameLoop);
+    }
+
+    gameLoop();
+  </script>
+</body>
+</html>
