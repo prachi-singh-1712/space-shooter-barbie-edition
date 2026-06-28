@@ -353,6 +353,7 @@
       let melStep = 0;
 
       function playMelNote() {
+        if (!bgmStarted) return;
         const freq = MELODY[melStep % MELODY.length];
         const t = audioCtx.currentTime;
 
@@ -397,6 +398,7 @@
       let chordStep = 0;
 
       function playChord() {
+        if (!bgmStarted) return;
         const notes = CHORDS[chordStep % CHORDS.length];
         const t = audioCtx.currentTime;
 
@@ -426,6 +428,7 @@
       let bassStep = 0;
 
       function playBass() {
+        if (!bgmStarted) return;
         const freq = BASS_ROOTS[bassStep % BASS_ROOTS.length];
         const t = audioCtx.currentTime;
 
@@ -460,15 +463,14 @@
 
     function stopBGM() {
       if (!bgmStarted) return;
-      bgmStarted = false;
+      bgmStarted = false; // schedulers check this and no-op immediately
       if (window._bgmTimers) {
         window._bgmTimers.forEach(clearInterval);
         window._bgmTimers = null;
       }
       if (window._bgmMasterGain) {
-        window._bgmMasterGain.gain.cancelScheduledValues(audioCtx.currentTime);
-        window._bgmMasterGain.gain.setValueAtTime(window._bgmMasterGain.gain.value, audioCtx.currentTime);
-        window._bgmMasterGain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.5);
+        // Disconnect immediately so no already-scheduled notes can reach output
+        try { window._bgmMasterGain.disconnect(); } catch(e) {}
         window._bgmMasterGain = null;
       }
     }
@@ -813,6 +815,39 @@
       ctx.fillText(`Lives: ${lives}`, canvas.width - 16, 16);
       ctx.textAlign = 'left';
       ctx.shadowBlur = 0;
+
+      // ── Ken incoming warning — flashes 5s before boss spawns ────────────
+      const now = Date.now();
+      const timeUntilBoss = BOSS_INTERVAL - (now - lastBossTime);
+      if (!boss && timeUntilBoss > 0 && timeUntilBoss < 5000) {
+        if (Math.floor(now / 450) % 2 === 0) {
+          ctx.save();
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.shadowBlur = 0;
+
+          const cx = canvas.width / 2;
+          const cy = canvas.height / 2;
+
+          // Main warning line
+          ctx.font = 'bold 38px Arial';
+          ctx.strokeStyle = '#000000';
+          ctx.lineWidth = 5;
+          ctx.lineJoin = 'round';
+          ctx.strokeText('⚠ KEN INCOMING ⚠', cx, cy - 18);
+          ctx.fillStyle = '#800000'; // maroon
+          ctx.fillText('⚠ KEN INCOMING ⚠', cx, cy - 18);
+
+          // Sub-text
+          ctx.font = 'bold 18px Arial';
+          ctx.lineWidth = 3;
+          ctx.strokeText('Love bomb him to get more points!', cx, cy + 18);
+          ctx.fillStyle = '#800000';
+          ctx.fillText('Love bomb him to get more points!', cx, cy + 18);
+
+          ctx.restore();
+        }
+      }
 
       // Level-up flash
       if (levelUpTimer > 0) {
